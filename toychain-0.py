@@ -6,11 +6,8 @@ import numpy as np
 Toy model of an on-chain ecosystem with two tokens and one DEX.
 Transactions on the DEX create an opportunity for sandwich attacks.
 """
-class ExecutionException(Exception):
-    pass
-def require(cond, msg=None):
-    if not cond: raise ExecutionException(msg)
 
+# Part 0: Uniswap the easy way
 # This is the basic Uniswap v2 rule
 def pool_swap(poolA, poolB, amtA):
     # Solve the constant product poolA*poolB == (poolA+amtA)*(poolB+amtB)
@@ -29,11 +26,17 @@ class Chain():
         self.poolA = 1000.
         self.poolB = 1000.
         self.accounts = {"alice": [100.,100.],
-                         "bob":   [100.,100.]}
+                         "bob":   [100.,100.],
+                         "searcher": [1000.,1000.]}
 
     def pool_price(self):
         # What is the instantaneous price?
         return 1./(self.poolA / self.poolB)
+
+    def apply_or_continue(self, tx, debug=False):
+        try: return self.apply(tx)
+        except ExecutionException as e:
+            if debug: print(e)
 
     def apply(self, tx):
         # Apply the transaction, updating the pool price
@@ -43,7 +46,7 @@ class Chain():
                 amtA = tx['qty']
                 amtB = pool_swap(self.poolA, self.poolB, amtA)
                 require(self.accounts[tx['sndr']][0] >= amtA, 'not enough balance for trade')
-                require(amtB < 0)
+                require(amtB <= 0)
                 require(-amtB >= tx['rsv'], f"slippage exceeded -amtB:{-amtB}, rsv:{tx['rsv']}")
                 require(self.poolB + amtB >= 0, 'exhausts pool')
             else:
@@ -51,7 +54,7 @@ class Chain():
                 amtB = -tx['qty']
                 amtA = pool_swap(self.poolB, self.poolA, amtB)
                 require(self.accounts[tx['sndr']][1] >= amtB, 'not enough balance for trade')
-                require(amtA < 0)
+                require(amtA <= 0)
                 require(-amtA >= tx['rsv'], f"slippage exceeded -amtA:{-amtA}, rsv:{tx['rsv']}")
                 require(self.poolA + amtA >= 0, 'exhausts pool')
 
@@ -63,45 +66,54 @@ class Chain():
         else:
             raise ValueError("unknown tx type")
 
-def create_swap(sndr,qty,rsv):
+def create_swap(sndr,qty,rsv=0.):
     # TODO: auth should do something helpful w/ account nonce, tx hash?
     return dict(type="swap",sndr=sndr,qty=qty,rsv=rsv,auth="auth")
 
 """
-The first scenario just
+The first scenario just creates a fixed interaction
 """
 def scenario1():
     chain = Chain()
     print('Chain at genesis:')
     print(chain.accounts, chain.poolA, chain.poolB)    
 
-    # Create (10, 7) bid on pool1 (creating a front-run possibility)
+    # Sell 10 units of Token A, receiving at least 7 back of Token B
     tx1 = create_swap("alice", 10, 7)
     chain.apply(tx1)
     
     print('Chain after Alice sells 10 tokenA:')
     print(chain.accounts, chain.poolA, chain.poolB)
     
-    # Create a second bid    
-    tx1 = create_swap("bob",  10, 7)
-    chain.apply(tx1)
+    # Sell 10 units of Token A, receiving at least 7 back of Token B
+    tx2 = create_swap("bob",  10, 7)
+    chain.apply(tx2)
 
     print('Chain after Bob sells 10 tokenA:')
     print(chain.accounts, chain.poolA, chain.poolB)    
 
 scenario1()    
 
+# Part II: Let's simulate some trades
 """
 Let's generate trades and report utility over time.
+
+The main idea is that we add noise to the utility functions / preferences.
+of the players. 
+In this way, they get immediate benefit by trading with the AMM.
+Because the noise we add is uncorrelated, they often end up arbitraging
+each other.
 """
 
 import matplotlib.pyplot as plt
+plt.ion()
 
-def scenario2(do_trades=False):
+def scenario2(do_trades=True, do_frontruns=False):
     # Preferences are expressed as utility weights over tokens.
     # These can drift over time
     preferences = {"alice":[1.01,0.99],  # Alice would prefer to buy tokenA
-                   "bob"  :[1.0,1.0]}
+                   "bob"  :[1.0,1.0],
+                   "searcher": [1.0,1.0]}
 
     def utility(pref, portfolio):
         assert len(pref) == len(portfolio) == 2
@@ -123,13 +135,14 @@ def scenario2(do_trades=False):
     xs = []
     poolAs = []
     poolBs = []
+    searchers = []
     for i in range(num_iters):
 
         # Sample a drift in preferences
-        preferences['alice'][0] = round(    preferences['alice'][0] * driftAlice[i] * 1e3) / 1e3
-        preferences['alice'][1] = round(1.0/preferences['alice'][0]                 * 1e3) / 1e3
-        preferences['bob'  ][0] = round(    preferences['bob'  ][0] * driftBob[i]   * 1e3) / 1e3
-        preferences['bob'  ][1] = round(1.0/preferences['bob'  ][0]                 * 1e3) / 1e3
+        preferences['alice'][0] = round(    preferences['alice'][0]*driftAlice[i]*1e3)/1e3
+        preferences['alice'][1] = round(1.0/preferences['alice'][0]              *1e3)/1e3
+        preferences['bob'  ][0] = round(    preferences['bob'  ][0]*driftBob[i]  *1e3)/1e3
+        preferences['bob'  ][1] = round(1.0/preferences['bob'  ][0]              *1e3)/1e3
 
         # The party tries to trade, in the direction of the top-of-block price
         def make_trade(sndr,prefs,portf):
@@ -149,31 +162,48 @@ def scenario2(do_trades=False):
                 qty = 0
                 slip = 0
             return create_swap(sndr, qty, slip)
+
+        # Record both utilities before
+        util_a_old = utility(preferences['alice'], chain.accounts['alice'])
+        util_b_old = utility(preferences['bob'  ], chain.accounts['bob'  ])
+        txA = make_trade('alice', preferences['alice'], chain.accounts['alice'])        
+        txB = make_trade('bob'  , preferences['bob'  ], chain.accounts['bob'  ])
+
+        # Record searcher portfolio
+        searcher_old = chain.accounts['searcher']
+
+        if do_trades and not do_frontruns:
+            # Apply Alice's trade then Bob's trade
+            chain.apply_or_continue(txA)
+            chain.apply_or_continue(txB)
+
+        elif do_frontruns:
+            # Let the searcher try a sandwich
+            txFrA,txBrA = make_sandwich(chain, txA)
+            chain.apply_or_continue(txFrA)
+            chain.apply_or_continue(txA)
+            chain.apply_or_continue(txBrA)
+
+            # Let the searcher try another sandwich
+            txFrB,txBrB = make_sandwich(chain, txB)
+            chain.apply_or_continue(txFrB)
+            chain.apply_or_continue(txB)
+            chain.apply_or_continue(txBrB)
+            
+
+        # Record both utilities after
+        util_a_new = utility(preferences['alice'], chain.accounts['alice'])
+        util_b_new = utility(preferences['bob'  ], chain.accounts['bob'  ])
         
-        if do_trades:
-            # Apply Alice's trade, recording utility before and after
-            util_a_old = utility(preferences['alice'], chain.accounts['alice'])
-            txA = make_trade('alice', preferences['alice'], chain.accounts['alice'])
-            try: chain.apply(txA)
-            except ExecutionException as e: pass # print(e)
-            util_a_new = utility(preferences['alice'], chain.accounts['alice'])
-
-            # Apply Bob's trade, recording utility before and after
-            util_b_old = utility(preferences['bob'  ], chain.accounts['bob'  ])
-            txB = make_trade('bob'  , preferences['bob'  ], chain.accounts['bob'  ])
-            try: chain.apply(txB)
-            except ExecutionException as e: pass # print(e)
-            util_b_new = utility(preferences['bob'  ], chain.accounts['bob'  ])
-        else:
-            util_a_new = util_a_old = utility(preferences['alice'], chain.accounts['alice'])
-            util_b_new = util_b_old = utility(preferences['bob'  ], chain.accounts['bob'  ])
-
+        searcher_new = utility(preferences['searcher'], chain.accounts['searcher'])-2000
+        
         poolAs.append(chain.poolA)
         poolBs.append(chain.poolB)
         utils_alice.append(util_a_new)
         utils_bob  .append(util_b_new)
         diffs_alice.append(util_a_new-util_a_old)
         diffs_bob  .append(util_b_new-util_b_old)
+        searchers.append(searcher_new)
         xs.append(i)
 
         # Did my utility increase?
@@ -189,34 +219,46 @@ def scenario2(do_trades=False):
     plt.ylabel('net utility')
     plt.title(f'net utility after trading (trading:{do_trades}')
     plt.ylim(ymin=-0.05)
-    plt.legend(['alice','bob'])
-
-    # Scatter plot the pool prices
-    plt.figure(2)
-    plt.clf()
-    plt.title('pool reserves')
-    plt.scatter(poolAs,poolBs)
-    plt.ylim([0,1200])
-    plt.xlim([0,1200])
+    plt.legend(['alice','bob','searcher'])
 
     # Draw the overall social welfare (sums of utility)
     plt.figure(1)
     plt.clf()
-    plt.plot(xs,utils_alice,xs,utils_bob)
+    plt.plot(xs,utils_alice,xs,utils_bob,xs,np.array(searchers)+150)
     plt.xlabel('iter')
     plt.ylabel('utility')
     plt.title('utility over time')
-    plt.legend(['alice','bob'])
+    plt.legend(['alice','bob','searcher'])
     plt.show()
 
+    # Maximal front-run?
+    plt.figure(2)
+    plt.clf()
+    plt.plot(xs,np.array(searchers))
+    plt.xlabel('iter')
+    plt.ylabel('total units')
+    plt.title('net utility to searcher')
+
+    if 0:
+        # Scatter plot the pool prices
+        plt.figure(2)
+        plt.clf()
+        plt.title('pool reserves')
+        plt.scatter(poolAs,poolBs)
+        plt.ylim([0,1200])
+        plt.xlim([0,1200])
+
+    print('Surplus distributed to searcher: ', searchers[-1])
+
+print('Scenario 3: sandwiches')
 scenario2(do_trades=True)
 
-
+# Part III: Sandwich Time!
 """
 Can you solve for the optimal front-run?
 """
 
-def produce_sandwich(chain, tx_victim):
+def make_sandwich(chain, tx):
     """
     args: 
       chain: a copy of the current chainstate
@@ -227,13 +269,12 @@ def produce_sandwich(chain, tx_victim):
     """
     # Hint: create a Chain() copy
     # Hint: try bisection search
-    raise NotImplemented
 
-def scenario3():
-    # Sample transactions
+    # Is this stat arb???
+    txFr = create_swap('searcher',qty=2)
+    txBr = create_swap('searcher',qty=-2)
 
-    # Run the produce_sandwich
+    return txFr, txBr
 
-    # Apply all three transactions in sequence
-    pass
-    
+print('Scenario 3: sandwiches')
+scenario2(do_frontruns=True)
