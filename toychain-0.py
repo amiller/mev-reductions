@@ -171,7 +171,7 @@ def scenario2(do_trades=False):
         poolAs.append(chain.poolA)
         poolBs.append(chain.poolB)
         utils_alice.append(util_a_new)
-        utils_bob  .append(util_a_new)
+        utils_bob  .append(util_b_new)
         diffs_alice.append(util_a_new-util_a_old)
         diffs_bob  .append(util_b_new-util_b_old)
         xs.append(i)
