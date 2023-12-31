@@ -136,15 +136,14 @@ def test_constant_product():
     price = {'A': 1.0, 'B': 1.0}
     assert p1.supply(price)['A'] == 0
 
-    price['A'] += 0.1
+    price['B'] += 0.1
     x = p1.supply(price)
-    print(p1.trade(x['A']), price['A'], x['B'])
-    # assert np.isclose(p1.trade(x['A']), price['A']*-x['B'])
+    # print(p1.trade(x['A']), price['A'], x['B'])
+    assert p1.trade(x['A']) <= x['A']/price['B']
 
-    price['A'] -= 0.2
+    price['B'] -= 0.2
     x = p1.supply(price)
-    # print(x)
-    # assert np.isclose(p1.trade(x['A']), -x['B'])
+    assert p1.trade(x['A']) >= -x['A']/price['B']
     
 test_constant_product()
 
