@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import walras
-from imp import reload
+from importlib import reload
 reload(walras)
 from walras import ConstantProductAMM, LimitOrder
 from functools import reduce
