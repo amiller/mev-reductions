@@ -1,5 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import walras
+from imp import reload
+reload(walras)
 from walras import ConstantProductAMM, LimitOrder
 from functools import reduce
 import math
@@ -7,18 +10,19 @@ from scipy.optimize import minimize
 from collections import defaultdict
 
 # Here's a scenario with just 2 tokens, a stack of limit orders, and 1 AMM
-lim1 = LimitOrder(100, 0.98, 'A', 'B')
-lim2 = LimitOrder(100, 1.05, 'A', 'B')
-lim3 = LimitOrder(100, 1.1, 'A', 'B')
-lim4 = LimitOrder(100, 0.95, 'B', 'A')
-lim5 = LimitOrder(100, 1.05, 'B', 'A')
-lim6 = LimitOrder(100, 1.1, 'B', 'A')
-limit_orders = [lim1, lim2, lim3, lim4, lim5, lim6]
+lim1 = LimitOrder(100, 1.01, 'A', 'B')
+lim2 = LimitOrder(100, 1.02, 'A', 'B')
+lim3 = LimitOrder(100, 1.03, 'A', 'B')
+lim4 = LimitOrder(100, 1.01, 'B', 'A')
+lim5 = LimitOrder(100, 1.02, 'B', 'A')
+lim6 = LimitOrder(100, 1.03, 'B', 'A')
+# limit_orders = [lim1, lim2, lim3, lim4, lim5, lim6]
+limit_orders = [lim1,lim2,lim3,lim4,lim5,lim6]
 price_vector = 1.0
 
 # Here's the AMM, configured by an initial pool amount
 poolA=1000
-poolB=1150
+poolB=1100
 pool1 = ConstantProductAMM(poolA, poolB, 'A', 'B')
 
 # We can represent the scenario just by the list of supply functions
@@ -41,33 +45,97 @@ def net_demand(supply_functions, price_vector):
 
 
 def find_market_clearing_price_scipy(supply_functions, initial_price_vector):
-    # Function to calculate the net demand
-    def net_demand_vector(price_vector):
+    # The error vector is the L2 sum of net demand of each asset...
+    #    should it matter if this is scaled by relative price? how to normalize?
+    def error_vector(price_vector):
         price_dict = {token: price for token, price in zip(initial_price_vector.keys(), price_vector)}
         net_demands = net_demand(supply_functions, price_dict)
-        return sum([v for v in net_demands.values()])
+        return sum([v*v for v in net_demands.values()])
 
     # Convert initial price vector to a list for fsolve
     initial_prices = list(initial_price_vector.values())
 
-    # Use fsolve to find the price vector that makes net demand zero
-    clearing_prices = minimize(net_demand_vector,
+    # Use scipy to find the price vector that makes net demand zero
+    clearing_prices = minimize(error_vector,
                                x0=initial_prices,
-                               bounds=2*[(0,None)])
-    print(clearing_prices)
-    print('initial:', net_demand_vector(initial_prices))
-    print('net_demand with solution', net_demand_vector(clearing_prices.x))
+                               bounds=2*[(1e-15,None)]) # Prices must be positive
+    print('clearing prices:', clearing_prices)
+    print('error_vec initial:', error_vector(initial_prices))
+    print('error_vec with solution', error_vector(clearing_prices.x))
 
     # Convert back to a dictionary
     return {token: price for token, price in zip(initial_price_vector.keys(), clearing_prices.x)}
 
 
-initial_price_vector = {'A': 0.98, 'B': 1.0}
-# market_clearing_price = find_market_clearing_price_scipy(supply_functions, initial_price_vector)
-market_clearing_price = initial_price_vector
-rel_price = market_clearing_price['A'] / market_clearing_price['B']
+initial_price_vector = {'A': 1.0, 'B': 1.0}
+market_clearing_price = find_market_clearing_price_scipy(supply_functions, initial_price_vector)
+# market_clearing_price = initial_price_vector
+rel_price = market_clearing_price['B'] / market_clearing_price['A']
 print("Market Clearing Price:", rel_price)
 print('Residual net demand:', net_demand(supply_functions, market_clearing_price))
+
+# Sum a list of supply functions
+def sum_supply(supply_funcs):
+    def _supply(price_dict):
+        d = defaultdict(lambda: 0)
+        for f in supply_funcs:
+            for k,v in f(price_dict).items():
+                d[k] += v
+        return d
+    return _supply
+
+# We should define with test functions what it means for a supply
+# function to be admissible, including continuity, monotone, ..
+def test_supply():
+    pass
+
+def plot_supply(supply_funcs, my_price=None, title=None):
+    plt.figure(3)
+    plt.clf()
+
+    A = 'A'
+    B = 'B'
+    
+    # Relative price
+    p_values = np.linspace(0.8,1.2,400)
+
+    supply_values = np.zeros((len(supply_funcs),len(p_values)))
+
+    tokens = ['A','B']
+    def pricevector(rel_price):
+        return {A: 1.0, B: rel_price}
+    def eval_supply(supply_func, rel_price):
+        
+        As = [supply_func(pricevector(p))['A'] for p in rel_price]
+        Bs = [supply_func(pricevector(p))['B'] for p in rel_price]
+        for a,b,p in zip(As,Bs,rel_price):
+            assert np.isclose(a + b*p, 0)
+        return As
+
+    for f in supply_funcs:
+        ys = eval_supply(f, p_values)
+
+        if 'AMM' in str(type(f)):
+            label = 'AMM'
+        elif 'LimitOrder' in str(type(f)):
+            label = 'Limit Order'
+        else: label = None
+        plt.plot(p_values, ys, label=label)
+
+    # Price vector as a vertical line
+    plt.axvline(x=my_price, color='blue', linestyle='--', label=f'Price: {rel_price}')
+
+    summed = sum_supply(supply_funcs)
+    ys = eval_supply(summed, p_values)
+    plt.plot(p_values, ys, 'k--', label='Sum')
+    plt.ylabel('Amount sold of asset A')
+    plt.xlabel('Price')
+    plt.title(title)
+    plt.legend()
+    plt.draw()
+    
+plot_supply([x.supply for x in [lim1,lim2,lim3,lim4,lim5,lim6,pool1]],
+            rel_price, 'Supply functions')
 
 
 ###
@@ -119,7 +187,7 @@ def plot_depth_chart(limit_orders, rel_price, A='A',B='B'):
         net = 0
         # Just need the amount of B bought/sold
         for order in buy_orders + sell_orders:
-            d = order.supply(dict(A=price,B=1.0))
+            d = order.supply(dict(A=1.0,B=price))
             net += price * d[A]
         asset_nets.append(net)
     
@@ -136,6 +204,7 @@ def plot_depth_chart(limit_orders, rel_price, A='A',B='B'):
     # Price vector as a vertical line
     plt.axvline(x=rel_price, color='blue', linestyle='--', label=f'Price: {rel_price}')
 
+    # Plot supply function end points
     plt.plot(all_prices, asset_nets, linestyle='--',color='black', label='supply(p)')
 
     plt.xlabel('Price')
@@ -146,24 +215,36 @@ def plot_depth_chart(limit_orders, rel_price, A='A',B='B'):
     plt.draw()
 
 def plot_amm(poolA, poolB, rel_price):
-    # Generate points for the constant product curve
-    # Avoid zero to prevent division by zero
-    a_values = np.linspace(0.98 * poolA, 1.07*poolA, 200)
-    b_values = poolA * poolB / a_values
 
     # Trade vector from the supply function at this price
     pool = ConstantProductAMM(poolA, poolB,'A','B')
-    trade_vec = pool.supply(dict(A=rel_price,B=1.))
-    trade_amtA = trade_vec['A']
+    print('ok')
+    trade_vec = pool.supply(dict(A=1.,B=rel_price))
+    if trade_vec['A'] > 0:
+        # The virtual agent sold us some amtA. But we overpaid in trade_vec B.
+        # We need to solve backward by price.
+        # print('case 1', trade_vec)
+        amtB = -trade_vec['B']
+        trade_amtA = -amtB*poolA/(amtB + poolB)
+    else:
+        # print('case 2')
+        trade_amtA = -trade_vec['A']
     trade_amtB = -pool.trade(trade_amtA)
-    #
+    # print('trade_amtA:', trade_amtA)
+    # print('trade_amtB:', trade_amtB)
     end_point_A = poolA + trade_amtA
     end_point_B = poolB + trade_amtB
+    assert np.isclose((end_point_A)/(end_point_B), rel_price)
 
-    # Price tangent line: y = p * x + c
-    # To find c, use the point where the trade ends
-    c = end_point_B + 1./rel_price * end_point_A
-    tangent_line = -1./rel_price * a_values + c
+    # Generate points for the constant product curve
+    # Avoid zero to prevent division by zero
+    a_values = np.linspace(0.98 * min(poolA,end_point_A), 1.02*max(poolA,end_point_A), 200)
+    b_values = poolA * poolB / a_values
+
+    # Tangent goes through ending point
+    #print('rel_price', rel_price)
+    #print('end point:', end_point_A / end_point_B)
+    tangent_line = end_point_B + (a_values - end_point_A) * -1./rel_price
 
     # Plotting
     plt.figure(2, figsize=(8, 6))
