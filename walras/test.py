@@ -3,10 +3,82 @@ import numpy as np
 from walras import ConstantProductAMM, LimitOrder
 from functools import reduce
 import math
+from scipy.optimize import minimize
+from collections import defaultdict
 
-# Example usage
+# Here's a scenario with just 2 tokens, a stack of limit orders, and 1 AMM
+lim1 = LimitOrder(100, 0.98, 'A', 'B')
+lim2 = LimitOrder(100, 1.05, 'A', 'B')
+lim3 = LimitOrder(100, 1.1, 'A', 'B')
+lim4 = LimitOrder(100, 0.95, 'B', 'A')
+lim5 = LimitOrder(100, 1.05, 'B', 'A')
+lim6 = LimitOrder(100, 1.1, 'B', 'A')
+limit_orders = [lim1, lim2, lim3, lim4, lim5, lim6]
+price_vector = 1.0
 
-def plot_depth_chart(limit_orders, price_vector,A='A',B='B'):
+# Here's the AMM, configured by an initial pool amount
+poolA=1000
+poolB=1150
+pool1 = ConstantProductAMM(poolA, poolB, 'A', 'B')
+
+# We can represent the scenario just by the list of supply functions
+supply_functions = [lim.supply for lim in limit_orders] + [pool1.supply]
+
+def net_demand(supply_functions, price_vector):
+    # Initialize a dictionary to hold the net demand for each token
+    net_demand = defaultdict(lambda: 0)
+
+    # For each supply function, calculate the supply and add it to the net demand
+    for supply_func in supply_functions:
+        supply = supply_func(price_vector)
+        for token, amount in supply.items():
+            # print('token', token, price_vector[token])
+            net_demand[token] += amount
+
+    # The net demand can be negative (net supply) or positive (net demand)
+    # print('net_demand', net_demand)
+    return net_demand
+
+
+def find_market_clearing_price_scipy(supply_functions, initial_price_vector):
+    # Function to calculate the net demand
+    def net_demand_vector(price_vector):
+        price_dict = {token: price for token, price in zip(initial_price_vector.keys(), price_vector)}
+        net_demands = net_demand(supply_functions, price_dict)
+        return sum([v for v in net_demands.values()])
+
+    # Convert initial price vector to a list for fsolve
+    initial_prices = list(initial_price_vector.values())
+
+    # Use fsolve to find the price vector that makes net demand zero
+    clearing_prices = minimize(net_demand_vector,
+                               x0=initial_prices,
+                               bounds=2*[(0,None)])
+    print(clearing_prices)
+    print('initial:', net_demand_vector(initial_prices))
+    print('net_demand with solution', net_demand_vector(clearing_prices.x))
+
+    # Convert back to a dictionary
+    return {token: price for token, price in zip(initial_price_vector.keys(), clearing_prices.x)}
+
+
+initial_price_vector = {'A': 0.98, 'B': 1.0}
+# market_clearing_price = find_market_clearing_price_scipy(supply_functions, initial_price_vector)
+market_clearing_price = initial_price_vector
+rel_price = market_clearing_price['A'] / market_clearing_price['B']
+print("Market Clearing Price:", rel_price)
+print('Residual net demand:', net_demand(supply_functions, market_clearing_price))
+
+
+###
+# Illustrations
+###
+
+"""
+These are illustrations of how the individual components, namely limit 
+order books and constant product AMMs respond to the proposed clearing price
+"""
+def plot_depth_chart(limit_orders, rel_price, A='A',B='B'):
     for order in limit_orders:
         assert order.A in (A,B)
         assert order.B in (A,B)
@@ -22,7 +94,6 @@ def plot_depth_chart(limit_orders, price_vector,A='A',B='B'):
     for order in buy_orders:
         amtB = order.poolB*order.price()
         price = 1./order.price()
-        print('buy:', amtB, price)
         cumulative_buy_amount.append(cumulative_buy_amount[-1] + amtB)
         cumulative_buy_amount.append(cumulative_buy_amount[-1])
         buy_prices.append(price)
@@ -32,7 +103,6 @@ def plot_depth_chart(limit_orders, price_vector,A='A',B='B'):
     sell_prices = []
     for order in sell_orders:
         amtB = order.poolB
-        print('sell:', amtB, order.price())
         cumulative_sell_amount.append(cumulative_sell_amount[-1] + amtB)
         cumulative_sell_amount.append(cumulative_sell_amount[-1])
         sell_prices.append(order.price())
@@ -58,14 +128,13 @@ def plot_depth_chart(limit_orders, price_vector,A='A',B='B'):
     plt.clf()
 
     # Plot for buy orders
-    print('buy_prices:', buy_prices, 'buy_cum:', cumulative_buy_amount)
     plt.fill_between(buy_prices, 0, cumulative_buy_amount, color='green', alpha=0.5, label='Buys')
     
     # Plot for sell orders
     plt.fill_between(sell_prices, 0, cumulative_sell_amount, color='red', alpha=0.5, label='Sells')
 
     # Price vector as a vertical line
-    plt.axvline(x=price_vector, color='blue', linestyle='--', label=f'Price: {price}')
+    plt.axvline(x=rel_price, color='blue', linestyle='--', label=f'Price: {rel_price}')
 
     plt.plot(all_prices, asset_nets, linestyle='--',color='black', label='supply(p)')
 
@@ -75,21 +144,6 @@ def plot_depth_chart(limit_orders, price_vector,A='A',B='B'):
     plt.legend()
     plt.grid(True)
     plt.draw()
-
-# Example usage
-
-lim1 = LimitOrder(100, 0.98, 'A', 'B')
-lim2 = LimitOrder(100, 1.05, 'A', 'B')
-lim3 = LimitOrder(100, 1.1, 'A', 'B')
-lim4 = LimitOrder(100, 0.95, 'B', 'A')
-lim5 = LimitOrder(100, 1.05, 'B', 'A')
-lim6 = LimitOrder(100, 1.1, 'B', 'A')
-limit_orders = [lim1, lim2, lim3, lim4, lim5, lim6]
-price_vector = 1.0
-
-plot_depth_chart(limit_orders, price_vector)
-
-
 
 def plot_amm(poolA, poolB, rel_price):
     # Generate points for the constant product curve
@@ -126,6 +180,7 @@ def plot_amm(poolA, poolB, rel_price):
     plt.grid(True)
     plt.draw()
 
-plot_amm(poolA=1000, poolB=1000, rel_price=1.1)
+plot_depth_chart(limit_orders, rel_price)
+plot_amm(poolA=poolA, poolB=poolB, rel_price=rel_price)
 
 plt.show()
