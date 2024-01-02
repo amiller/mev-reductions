@@ -28,6 +28,16 @@ pool1 = ConstantProductAMM(poolA, poolB, 'A', 'B')
 # We can represent the scenario just by the list of supply functions
 supply_functions = [lim.supply for lim in limit_orders] + [pool1.supply]
 
+# Sum a list of supply functions (Better to make a class?)
+def sum_supply(supply_funcs):
+    def _supply(price_dict):
+        d = defaultdict(lambda: 0)
+        for f in supply_funcs:
+            for k,v in f(price_dict).items():
+                d[k] += v
+        return d
+    return _supply
+
 def net_demand(supply_functions, price_vector):
     # Initialize a dictionary to hold the net demand for each token
     net_demand = defaultdict(lambda: 0)
@@ -74,20 +84,6 @@ rel_price = market_clearing_price['B'] / market_clearing_price['A']
 print("Market Clearing Price:", rel_price)
 print('Residual net demand:', net_demand(supply_functions, market_clearing_price))
 
-# Sum a list of supply functions
-def sum_supply(supply_funcs):
-    def _supply(price_dict):
-        d = defaultdict(lambda: 0)
-        for f in supply_funcs:
-            for k,v in f(price_dict).items():
-                d[k] += v
-        return d
-    return _supply
-
-# We should define with test functions what it means for a supply
-# function to be admissible, including continuity, monotone, ..
-def test_supply():
-    pass
 
 def plot_supply(supply_funcs, my_price=None, title=None):
     plt.figure(3)

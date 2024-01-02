@@ -45,18 +45,18 @@ class Chain():
                 # Sell qty of tokenA, buy at least rsv of tokenB
                 amtA = tx['qty']
                 amtB = pool_swap(self.poolA, self.poolB, amtA)
-                require(self.accounts[tx['sndr']][0] >= amtA, 'not enough balance for trade')
-                require(amtB <= 0)
-                require(-amtB >= tx['rsv'], f"slippage exceeded -amtB:{-amtB}, rsv:{tx['rsv']}")
-                require(self.poolB + amtB >= 0, 'exhausts pool')
+                assert (self.accounts[tx['sndr']][0] >= amtA, 'not enough balance for trade')
+                assert (amtB <= 0)
+                assert (-amtB >= tx['rsv'], f"slippage exceeded -amtB:{-amtB}, rsv:{tx['rsv']}")
+                assert (self.poolB + amtB >= 0, 'exhausts pool')
             else:
                 # Sell qty of tokenB, buy at least rsv of tokenA
                 amtB = -tx['qty']
                 amtA = pool_swap(self.poolB, self.poolA, amtB)
-                require(self.accounts[tx['sndr']][1] >= amtB, 'not enough balance for trade')
-                require(amtA <= 0)
-                require(-amtA >= tx['rsv'], f"slippage exceeded -amtA:{-amtA}, rsv:{tx['rsv']}")
-                require(self.poolA + amtA >= 0, 'exhausts pool')
+                assert (self.accounts[tx['sndr']][1] >= amtB, 'not enough balance for trade')
+                assert (amtA <= 0)
+                assert (-amtA >= tx['rsv'], f"slippage exceeded -amtA:{-amtA}, rsv:{tx['rsv']}")
+                assert (self.poolA + amtA >= 0, 'exhausts pool')
 
             self.poolA += amtA
             self.poolB += amtB
@@ -106,7 +106,6 @@ each other.
 """
 
 import matplotlib.pyplot as plt
-plt.ion()
 
 def scenario2(do_trades=True, do_frontruns=False):
     # Preferences are expressed as utility weights over tokens.
@@ -278,3 +277,4 @@ def make_sandwich(chain, tx):
 
 print('Scenario 3: sandwiches')
 scenario2(do_frontruns=True)
+plt.show()
